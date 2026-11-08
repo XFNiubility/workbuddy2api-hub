@@ -835,6 +835,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   /* 账号名那行要允许换行，第二行容器再用 flex-basis:100% 强制独占一行；
      只给 width:100% 不够——它是 nowrap flex 的子项，仍会与昵称同排。 */
   table.account-cards td:nth-child(2) .acct-name-row{flex-wrap:wrap}
+  /* 这一格的直接子项默认 min-width:auto（= 内容宽）：长昵称会把整格撑到卡片
+     之外——390px 视口实测单元格内容宽 271px、名字行 434px，右侧被裁掉、也没有
+     省略号。钉住 min-width:0 + max-width:100% 后，昵称才真正按格宽省略。 */
+  table.account-cards td:nth-child(2) > *{min-width:0;max-width:100%}
   .acct-mobile-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;
     flex-basis:100%;width:100%;margin-top:4px}
   .acct-mobile-meta .badge{margin-left:0!important}
@@ -2018,6 +2022,22 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
   var SKIP = {SCRIPT: 1, STYLE: 1, TEXTAREA: 1, NOSCRIPT: 1};
   var DICT = {
     '媒体': 'Media',
+    '全部号池': 'All pools',
+    '文本号池': 'Text pool',
+    '媒体号池': 'Media pool',
+    '未勾选': 'None selected',
+    '勾选移入媒体池': 'Move selected to media pool',
+    '勾选移回文本池': 'Move selected to text pool',
+    '号池：文本号池只跑对话，媒体号池只跑图片 / 视频。点一下切换': 'Pool: text accounts serve chat only; media accounts serve image / video only. Click to switch.',
+    '勾选后可批量挪号池': 'Tick to move this account between pools in bulk',
+    '先勾选要挪号池的账号': 'Select the accounts to move first',
+    '已把 ': 'Moved ',
+    ' 个账号移入媒体号池': ' account(s) to the media pool',
+    ' 个账号移入文本号池': ' account(s) to the text pool',
+    '批量挪号池失败: ': 'Failed to move accounts: ',
+    '已移入媒体号池（只跑图片 / 视频）': 'Moved to the media pool (image / video only)',
+    '已移回文本号池': 'Moved back to the text pool',
+    '切换号池失败: ': 'Failed to switch pool: ',
     '媒体生成': 'Media generation',
     '生图 / 生视频的开关在「设置」页；这里看模型约束和最近任务。每次生成都会真实扣账号积分。': 'The image / video switches live on the Settings page; this page shows model limits and recent tasks. Every generation really spends account credits.',
     '可用媒体模型': 'Available media models',
@@ -3495,6 +3515,23 @@ if(!window.__NEXT_UI__ && defaultConsoleLayout) {
     '猫猫正在旅行途中，请稍后再来查看！': 'The cat is still travelling; check again later!'
   };
   var HANT_PHRASES = {
+    "全部号池": "全部號池",
+    "文本号池": "文字號池",
+    "媒体号池": "媒體號池",
+    "未勾选": "未勾選",
+    "勾选移入媒体池": "勾選移入媒體池",
+    "勾选移回文本池": "勾選移回文字池",
+    "号池：文本号池只跑对话，媒体号池只跑图片 / 视频。点一下切换":
+      "號池：文字號池只跑對話，媒體號池只跑圖片 / 影片。點一下切換",
+    "勾选后可批量挪号池": "勾選後可批次挪號池",
+    "先勾选要挪号池的账号": "先勾選要挪號池的帳號",
+    "已把 ": "已把 ",
+    " 个账号移入媒体号池": " 個帳號移入媒體號池",
+    " 个账号移入文本号池": " 個帳號移入文字號池",
+    "批量挪号池失败: ": "批次挪號池失敗: ",
+    "已移入媒体号池（只跑图片 / 视频）": "已移入媒體號池（只跑圖片 / 影片）",
+    "已移回文本号池": "已移回文字號池",
+    "切换号池失败: ": "切換號池失敗: ",
     "API 等价花费": "API 等價花費",
     "API 等价": "API 等價",
     " · 周期已过": " · 週期已過",
@@ -5672,12 +5709,20 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
     <button class="sec" onclick="testAccounts(this)" title="逐个真发一条最小请求，并同时检查本机到上游的网络：能分清「账号坏了」和「本机断网了」，测试通过还会清掉该账号的熔断/降权计数">一键测试</button>
     </div>
     <div class="tb-group tb-bulk">
-    <button class="sec" onclick="autoAssignSlots()" title="把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响">一键分配代理</button>
+    <button class="sec" onclick="autoAssignSlots(this)" title="把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响">一键分配代理</button>
     <button class="sec" id="btnProductAll" onclick="cycleAllProducts(this)" title="把全部账号（含另一个版本）的出站身份切到下一个：WB → VSC → CLI">一键切换所有出站身份：<span id="productAllLabel">WB</span></button>
     <button class="sec" onclick="setAll(true, this)">全部启用</button>
     <button class="sec" onclick="setAll(false, this)">全部停用</button>
     <button class="sec" onclick="setCurrentGroup(true, this)">当前分组启用</button>
     <button class="sec" onclick="setCurrentGroup(false, this)">当前分组停用</button>
+    </div>
+    <div class="tb-group tb-pool">
+    <button class="sec" id="pfAll" onclick="poolFilter('all', this)">全部号池</button>
+    <button class="sec" id="pfText" onclick="poolFilter('text', this)">文本号池</button>
+    <button class="sec" id="pfMedia" onclick="poolFilter('media', this)">媒体号池</button>
+    <span id="batchPoolCount" style="font-size:12px;color:var(--dim);align-self:center">未勾选</span>
+    <button class="sec" id="batchToMedia" onclick="batchPoolScope('media', this)" title="把勾选的账号批量移入媒体号池（只跑图片 / 视频）" disabled>勾选移入媒体池</button>
+    <button class="sec" id="batchToText" onclick="batchPoolScope('text', this)" title="把勾选的账号批量移回文本号池（恢复文本模型）" disabled>勾选移回文本池</button>
     </div>
   </div>
     <div id="accounts"></div>
@@ -6390,8 +6435,21 @@ html[data-ui="next"] #nextContent .console-shell > main {padding:24px;max-width:
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="sec" onclick="discoverProxySlots(this)">自动发现 mihomo 端口</button>
+          <button class="sec" onclick="runSubBridgeTest(this)">测试订阅转换</button>
+          <button class="sec" onclick="runSubBridgeImport(this)">订阅转换并导入</button>
           <button class="sec" onclick="addProxySlotRow()">+ 添加槽位</button>
           <button onclick="saveProxySlots(this)">保存槽位</button>
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <div style="font-size:12px;color:var(--dim);margin-bottom:6px">
+          订阅链接（每行一条，支持 Clash/Mihomo 订阅、V2Ray/SS/SSR/Trojan 订阅或 base64，也可以直接填 http/socks5 代理）
+        </div>
+        <textarea id="subBridgeSubs" class="mono" style="width:100%;min-height:92px;font-size:12px" placeholder="https://example.com/sub&#10;socks5://user:pass@host:port"></textarea>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="sec" onclick="loadSubBridgeSubs(this)">读取当前订阅</button>
+          <button class="sec" onclick="saveSubBridgeSubs(this,false)">保存订阅</button>
+          <button class="sec" onclick="saveSubBridgeSubs(this,true)">保存并转换</button>
         </div>
       </div>
       <div id="slotList"></div>
@@ -10893,6 +10951,14 @@ function accountRow(a){
     + '<td style="text-align:left" data-label="账号">'
     // 账号名（大一号）+ 备注 chip 同一行；备注从独立一行收进账号后面。
     +   '<div class="acct-name-row">'
+    +     '<input type="checkbox" class="acct-sel" data-uid="' + uidAttr + '"'
+    +     ' onchange="updateBatchPoolBar()" onclick="event.stopPropagation()"'
+    +     ' style="vertical-align:middle;margin-right:2px" title="勾选后可批量挪号池">'
+    +     '<span class="badge mini' + ((a.poolScope==='media')?' warn':'') + '"'
+    +     ' style="cursor:pointer;margin-right:4px"'
+    +     ' title="号池：文本号池只跑对话，媒体号池只跑图片 / 视频。点一下切换"'
+    +     ' onclick="toggleAccountPoolScope(&quot;' + uidAttr + '&quot;,' + ((a.poolScope==='media')?'false':'true') + ')">'
+    +     ((a.poolScope==='media')?'媒体号池':'文本号池') + '</span>'
     +     '<span class="acct-name" title="' + esc(a.nickname) + '">' + esc(a.nickname) + '</span>'
     // 静态 API Key 账号：没有登录身份，也没有签到/成长体系，标出来省得当成
     // 普通 OAuth 号去点「重新登录」。悬停给出脱敏后的凭证，方便对上是哪一把。
@@ -11336,6 +11402,7 @@ let ACCT_PAGE = 1;
 let ACCT_TOTAL_PAGES = 1;
 let ACCT_PAGE_REALM = null;
 let ACCT_PAGE_FILTER = null;
+let POOL_FILTER = 'all';
 // 账号表上次真正画进 DOM 的内容指纹（同最近请求表的 lastRecentFp）：轮询拿回来
 // 的数据没变就整段跳过，不重拼 HTML、不重排。
 let lastAccountsFp = null;
@@ -11347,7 +11414,8 @@ function accountsRenderFp(){
   // （今日活动列）、视图区域、页码、表头排序、筛选条件、本地日期（「今日」口径）。
   // 筛选也进指纹：不靠「改筛选一定无参调用 renderAccounts()」这条约定兜底。
   return [
-    window.VIEW_REALM || 'intl', ACCT_PAGE, JSON.stringify(SORT_STATE.accounts || null),
+    window.VIEW_REALM || 'intl', ACCT_PAGE, POOL_FILTER,
+    JSON.stringify(SORT_STATE.accounts || null),
     JSON.stringify(ACCOUNT_FILTERS),
     new Date().toDateString(),
     JSON.stringify(window.ACCOUNTS || []), JSON.stringify(USAGE_BY_ACCOUNT || {}),
@@ -11390,10 +11458,13 @@ function renderAccounts(){
   const box = document.getElementById('accounts');
   const currentView = (window.VIEW_REALM || "intl");
   let list = accountsInView();
+  if(POOL_FILTER !== 'all'){
+    list = list.filter(a => String(a.poolScope || 'text') === POOL_FILTER);
+  }
   const skipIfSame = arguments[0] === true;
   if(ACCT_PAGE_REALM !== currentView){ ACCT_PAGE_REALM = currentView; ACCT_PAGE = 1; }
   const filterKey = ACCOUNT_FILTERS.query + '\u0001' + ACCOUNT_FILTERS.status
-    + '\u0001' + ACCOUNT_FILTERS.group;
+    + '\u0001' + ACCOUNT_FILTERS.group + '\u0001' + POOL_FILTER;
   const groupSelect = document.getElementById('accountGroupFilter');
   if(groupSelect){
     const groups = Array.from(new Set(list.map(a => String(a.group || '')).filter(Boolean))).sort();
@@ -11484,6 +11555,7 @@ function renderAccounts(){
   // 表下不再堆两行说明图例（出站身份解释留在每行身份按钮组的悬停提示里，
   // 轮询/粘性说明挂到「账号列表」标题上），表格底部保持干净。
   applyTableSort('accounts');
+  updateBatchPoolBar();
 }
 
 // 自动补积分快照：每个账号每次页面加载最多补一次，只补缺积分的那几个号。原来
@@ -11565,6 +11637,54 @@ async function toggleAccount(uid, enable, btn){
     toast('操作失败: ' + e.message, 'bad');
   }finally{
     if(btn) btn.disabled = false;
+  }
+}
+function poolFilter(scope, btn){
+  POOL_FILTER = scope === 'media' ? 'media' : (scope === 'text' ? 'text' : 'all');
+  ['pfAll','pfText','pfMedia'].forEach(function(id){
+    const el = document.getElementById(id);
+    if(el) el.classList.toggle('active', el === btn);
+  });
+  ACCT_PAGE = 1;
+  renderAccounts();
+}
+function acctSelUids(){
+  return Array.from(document.querySelectorAll('#accounts .acct-sel:checked'))
+    .map(function(el){ return el.dataset.uid; })
+    .filter(Boolean);
+}
+function updateBatchPoolBar(){
+  const n = acctSelUids().length;
+  const label = document.getElementById('batchPoolCount');
+  if(label) label.textContent = n ? ('已选 ' + n + ' 个') : '未勾选';
+  ['batchToMedia','batchToText'].forEach(function(id){
+    const el = document.getElementById(id);
+    if(el) el.disabled = !n;
+  });
+}
+async function batchPoolScope(scope, btn){
+  const uids = acctSelUids();
+  if(!uids.length){ toast('先勾选要挪号池的账号', 'warn'); return; }
+  if(btn) btn.disabled = true;
+  try{
+    const r = await postJSON('/accounts/set-all', {uids: uids, poolScope: scope});
+    toast('已把 ' + (r.moved == null ? uids.length : r.moved)
+          + ' 个账号移入' + (scope === 'media' ? '媒体号池' : '文本号池'), 'ok');
+    await loadAccounts();
+    updateBatchPoolBar();
+  }catch(e){
+    toast('批量挪号池失败: ' + e.message, 'bad');
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+async function toggleAccountPoolScope(uid, toMedia){
+  try{
+    await postJSON('/accounts/set', {uid: uid, poolScope: toMedia ? 'media' : 'text'});
+    await loadAccounts();
+    toast(toMedia ? '已移入媒体号池（只跑图片 / 视频）' : '已移回文本号池', 'ok');
+  }catch(e){
+    toast('切换号池失败: ' + e.message, 'bad');
   }
 }
 async function toggleAccountTasks(uid, enable){
@@ -16975,6 +17095,16 @@ function renderDeletedKeyRows(){
     + '</div></details>';
 }
 
+/* 出口徽章的单一来源：Key 卡片与编辑态提示都走这里。以前卡片自己写三目，
+   只认 intl / cn，codearts 落进兜底分支被画成「跟随面板切换」（#801）。 */
+function keyRealmBadge(realm, px){
+  const size = 'font-size:' + (px || 11) + 'px';
+  if(realm === 'intl') return '<span class="realm-badge-intl" style="' + size + '">固定国际版出口</span>';
+  if(realm === 'cn') return '<span class="realm-badge-cn" style="' + size + '">固定国内版出口</span>';
+  if(realm === 'codearts') return '<span class="realm-badge-codearts" style="' + size + '">固定 CodeArts 出口</span>';
+  return '<span class="badge s" style="' + size + '">跟随面板切换</span>';
+}
+
 function renderKeyRows(){
   renderDeletedKeyRows();
   renderApiKeyExamples();
@@ -17066,11 +17196,11 @@ function renderKeyRows(){
       ? '<span class="badge ok" style="font-size:11px;font-weight:600;padding:2px 10px">已启用</span>'
       : '<span class="badge off" style="font-size:11px;font-weight:600;padding:2px 10px">已禁用</span>';
 
-    const realmBadge = (row.realm === 'intl')
-      ? '<span class="realm-badge-intl" style="font-size:11px">固定国际版出口</span>'
-      : (row.realm === 'cn')
-      ? '<span class="realm-badge-cn" style="font-size:11px">固定国内版出口</span>'
-      : '<span class="badge s" style="font-size:11px">跟随面板切换</span>';
+    // 出口徽章要覆盖所有可绑定的出口：codearts 落进最后的兜底分支时会被画成
+    // 「跟随面板切换」，与实际绑定（settings.json 里 realm:"codearts"）不一致，
+    // 看起来像没绑上（#801）。统一走 keyRealmBadge()，与已删除 Key 列表的口径
+    // 一致，并复用已有的 .realm-badge-codearts 样式。
+    const realmBadge = keyRealmBadge(row.realm);
 
     const concBadge = (row.concurrency_limit && row.concurrency_limit > 0)
       ? '<span class="badge s mini" style="font-size:11px">并发上限 ' + row.concurrency_limit + '</span>'
@@ -17172,29 +17302,52 @@ function toggleKeyPicker(kind, i){
   const el = document.getElementById(id);
   if(el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
-async function loadKeyModelCatalog(){
-  if(Array.isArray(window.KEY_MODEL_CATALOG) && window.KEY_MODEL_CATALOG.length){
-    return window.KEY_MODEL_CATALOG;
-  }
+/* 模型准入的候选清单（#802）。
+ *
+ * 目录按出口分区：`/v1/models?realm=codearts` 的 13 个模型与 intl / cn 的目录
+ * 完全不交集，所以「只遍历 intl / cn」会让绑定 CodeArts 出口的 Key 根本选不到
+ * 自己的模型。口径：
+ *   - Key 绑定了出口 → 只取该出口的目录（不混入用不上的模型，与设置页
+ *     「按账号自己的区域取模型清单」一致）；那一次调用失败才退回全量清单，
+ *     picker 不会因此空白。
+ *   - 未绑定出口（跟随面板切换）→ 面板会跟着切区域，所以取全量：不带 realm 的
+ *     清单 + intl / cn + （CodeArts 已启用时）codearts。
+ * 结果按分区分别缓存：以前只有一个全局缓存，先打开的 Key 决定了后面所有 Key
+ * 的清单。
+ */
+async function loadKeyModelCatalog(row){
+  const bound = String((row && row.realm) || '');
+  const cacheKey = bound || 'all';
+  const cache = (window.KEY_MODEL_CATALOG_CACHE = window.KEY_MODEL_CATALOG_CACHE || {});
+  if(Array.isArray(cache[cacheKey]) && cache[cacheKey].length) return cache[cacheKey];
   const out = [];
   const seen = new Set();
-  const add = function(list){
+  const add = function(list, realm){
     for(const m of (list || [])){
       const id = String((m && m.id) || '');
-      if(id && !seen.has(id)){ seen.add(id); out.push(m); }
+      if(id && !seen.has(id)){
+        seen.add(id);
+        out.push(realm ? Object.assign({}, m, {_realm: realm}) : m);
+      }
     }
   };
-  // The unscoped listing is the widest catalogue the gateway advertises; the
-  // per-realm calls fill in anything it omits.
-  try { const r = await getJSON('/v1/models'); add(r.data); } catch(e) { /* keep going */ }
-  for(const realm of ['intl', 'cn']){
+  const codeartsOn = bound === 'codearts'
+    || (window.REALM_OPTIONS || []).indexOf('codearts') >= 0;
+  const realms = bound ? [bound] : ['intl', 'cn'];
+  if(!bound && codeartsOn) realms.push('codearts');
+  // 分区目录是主口径；单个分区失败只丢它自己，不把整个 picker 弄空。
+  for(const realm of realms){
     try {
       const r = await getJSON('/v1/models?realm=' + realm);
-      add(r.data);
+      add(r.data, realm);
     } catch(e) { /* one realm failing must not blank the picker */ }
   }
+  // 兜底：分区全挂时用不带 realm 的清单（面板当前区域）顶上。
+  if(!out.length){
+    try { const r = await getJSON('/v1/models'); add(r.data); } catch(e) { /* keep going */ }
+  }
   if(!out.length && Array.isArray(window.MODELS_DATA)) out.push(...window.MODELS_DATA);
-  window.KEY_MODEL_CATALOG = out;
+  if(out.length) cache[cacheKey] = out;
   return out;
 }
 async function renderKeyPickers(i){
@@ -17204,7 +17357,7 @@ async function renderKeyPickers(i){
   if(modelList){
     modelList.innerHTML = '<div style="font-size:12px;color:var(--dim);padding:4px">正在加载模型清单…</div>';
     let models = [];
-    try { models = await loadKeyModelCatalog(); } catch(e) { models = []; }
+    try { models = await loadKeyModelCatalog(row); } catch(e) { models = []; }
     // The all-realm listing is the primary source; fall back to the models tab
     // cache so the picker is never blank just because that one call failed.
     if(!(models || []).length && Array.isArray(window.MODELS_DATA)){
@@ -17213,11 +17366,19 @@ async function renderKeyPickers(i){
     if(!(models || []).length){
       modelList.innerHTML = '<div style="font-size:12px;color:var(--warn);padding:4px">模型清单为空或加载失败，<a href="javascript:void(0)" onclick="renderKeyPickers(' + i + ')">重试</a></div>';
     } else {
-      modelList.innerHTML = models.map(m => {
+      // 绑定了出口的 Key 只列该出口的目录：用已有的出口徽章说明范围，不新增
+      // 需要翻译的句子（词典按整句匹配，新句在英文 / 正體界面会回落中文）。
+      const boundHint = row.realm
+        ? '<div style="padding:2px 4px 6px">' + keyRealmBadge(row.realm, 10) + '</div>'
+        : '';
+      modelList.innerHTML = boundHint + models.map(m => {
         const id = String((m && m.id) || '');
         if(!id) return '';
         const checked = keyModelExact(row).indexOf(id) >= 0 ? ' checked' : '';
-        return '<label class="key-pick-row" data-search="' + esc(id.toLowerCase()) + '" style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 4px"><input type="checkbox" value="' + esc(id) + '"' + checked + ' onchange="toggleKeyModel(' + i + ',this)">' + esc(id) + '</label>';
+        const tag = (m && m._realm === 'codearts')
+          ? '<span class="realm-badge-codearts" style="font-size:10px;padding:0 5px;margin-left:4px">CodeArts</span>'
+          : '';
+        return '<label class="key-pick-row" data-search="' + esc(id.toLowerCase()) + '" style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 4px"><input type="checkbox" value="' + esc(id) + '"' + checked + ' onchange="toggleKeyModel(' + i + ',this)">' + esc(id) + tag + '</label>';
       }).join('');
     }
     updateKeyModelSummary(i);
@@ -17786,6 +17947,133 @@ async function testProxySlot(index, btn){
   }
 }
 
+function renderSubBridgeCatalog(r){
+  const box = document.getElementById('slotDiscover');
+  if(!box) return;
+  const list = r.nodes || [];
+  if(!list.length){
+    box.innerHTML = '<div style="margin-top:14px"><div style="font-size:12px;color:var(--dim)">订阅解析成功，但没有可用节点</div></div>';
+    return;
+  }
+  box.innerHTML = '<div style="margin-top:14px"><div style="font-size:12px;color:var(--dim);margin-bottom:8px">'
+    + '勾选要开启的节点（只勾选真正要用的，避免开太多端口）：'
+    + '<button class="sec mini" style="margin-left:8px" onclick="subBridgeSelectAll(true)">全选</button>'
+    + '<button class="sec mini" style="margin-left:6px" onclick="subBridgeSelectAll(false)">全不选</button>'
+    + '</div>'
+    + list.map(x =>
+        '<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px">'
+        + '<input type="checkbox" class="fx-import" data-node="' + esc(x.id || x.name) + '" data-kind="' + esc(x.type) + '">'
+        + '<span class="mono" style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(x.name) + '</span>'
+        + '<span style="color:var(--dim)">' + esc(x.type) + (x.server ? (' · ' + esc(x.server) + ':' + x.port) : '') + '</span>'
+        + '</label>').join('')
+    + '<div style="margin-top:8px">'
+    + '<button class="sec" onclick="subBridgeApplyPicked(this)">保存选择并开槽</button>'
+    + '</div></div>';
+}
+
+function subBridgeSelectAll(on){
+  document.querySelectorAll('#slotDiscover input.fx-import').forEach(el => { el.checked = on; });
+}
+
+async function subBridgeApplyPicked(btn){
+  const nodes = Array.from(document.querySelectorAll('#slotDiscover input.fx-import:checked'))
+    .map(el => el.dataset.node);
+  if(!nodes.length){ toast('没有勾选任何节点', 'warn'); return; }
+  if(btn){ btn.disabled = true; btn.textContent = '保存并开槽中...'; }
+  try{
+    const r = await postJSON('/proxy/subbridge', {action: 'apply', nodes, import: true});
+    if(r && r.ok){
+      const total = r.slots_total || (r.reachable || []).length;
+      const ready = r.slots_ready || (r.reachable || []).filter(x => x.ok).length;
+      const down = Math.max(0, total - ready);
+      toast('已更新 ' + total + ' 个槽位：' + ready + ' 个可用' +
+        (down ? '，' + down + ' 个暂不可用（已保留为关闭状态）' : '') +
+        '；旧订阅槽位已替换', down ? 'warn' : 'ok');
+      await loadProxySlots(true);
+      await loadAccounts();
+    }else{
+      toast('开槽失败: ' + ((r && r.error) || 'unknown'), 'bad');
+    }
+  }catch(e){
+    toast('开槽失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '保存选择并开槽'; }
+  }
+}
+
+function updateSubBridgeTextarea(subs){
+  const box = document.getElementById('subBridgeSubs');
+  if(box && Array.isArray(subs)) box.value = subs.join('\n');
+}
+
+function subBridgeLinesFromTextarea(){
+  const box = document.getElementById('subBridgeSubs');
+  if(!box) return [];
+  return (box.value || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+}
+
+async function loadSubBridgeSubs(btn){
+  if(btn){ btn.disabled = true; btn.textContent = '读取中...'; }
+  try{
+    const r = await postJSON('/proxy/subbridge', {action: 'list'});
+    if(r && r.ok){
+      updateSubBridgeTextarea(r.subs);
+      renderSubBridgeCatalog(r);
+      toast('解析到 ' + ((r.nodes || []).length) + ' 个节点，请勾选', 'ok');
+    }else{
+      toast('解析失败: ' + ((r && r.error) || 'unknown'), 'bad');
+    }
+  }catch(e){
+    toast('解析失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = '读取当前订阅'; }
+  }
+}
+
+async function saveSubBridgeSubs(btn, listAfter){
+  const subs = subBridgeLinesFromTextarea();
+  if(!subs.length){ toast('请至少填写一条订阅或代理链接', 'warn'); return; }
+  if(btn){ btn.disabled = true; btn.textContent = listAfter ? '保存并解析中...' : '保存中...'; }
+  try{
+    const r = await postJSON('/proxy/subbridge', {action: 'list', subs});
+    if(r && r.ok){
+      updateSubBridgeTextarea(r.subs);
+      if(listAfter){ renderSubBridgeCatalog(r); toast('已解析 ' + ((r.nodes || []).length) + ' 个节点，请勾选', 'ok'); }
+      else { toast('订阅已保存', 'ok'); }
+    }else{
+      toast('保存失败: ' + ((r && r.error) || 'unknown'), 'bad');
+    }
+  }catch(e){
+    toast('保存失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = listAfter ? '保存并转换' : '保存订阅'; }
+  }
+}
+
+async function subBridgeRequest(btn, action, busyText){
+  if(btn){ btn.disabled = true; btn.textContent = busyText; }
+  try{
+    const r = await postJSON('/proxy/subbridge', {action});
+    if(r && r.ok && action === 'list'){
+      updateSubBridgeTextarea(r.subs);
+      renderSubBridgeCatalog(r);
+    } else if(r && r.ok && action === 'test'){
+      const box = document.getElementById('slotDiscover');
+      if(box) box.innerHTML = '<div style="margin-top:14px"><div style="font-size:12px;color:var(--dim)">'
+        + '桥接正常，版本 ' + esc(r.version || '') + '</div></div>';
+    }
+    if(r && r.ok && action === 'test'){ toast('桥接正常', 'ok'); }
+    else if(!(r && r.ok)){ toast('操作失败: ' + (r.error || 'unknown'), 'bad'); }
+  }catch(e){
+    toast('操作失败: ' + e.message, 'bad');
+  }finally{
+    if(btn){ btn.disabled = false; btn.textContent = action === 'refresh' ? '订阅转换并导入' : '测试订阅转换'; }
+  }
+}
+
+async function runSubBridgeTest(btn){ await subBridgeRequest(btn, 'test', '测试中...'); }
+async function runSubBridgeImport(btn){ await subBridgeRequest(btn, 'list', '解析中...'); }
+
 async function discoverProxySlots(btn){
   if(btn){ btn.disabled = true; btn.textContent = '探测中...'; }
   try{
@@ -17842,22 +18130,42 @@ function importDiscovered(){
   toast('已加入 ' + picked.length + ' 个槽位，记得点「保存槽位」', 'ok');
 }
 
-async function autoAssignSlots(){
+async function autoAssignSlots(btn){
   // Only fills in accounts that have no exit yet: an account that is already
   // bound keeps its slot, so this is not a rebalancer.
-  const unbound = (window.ACCOUNTS || []).filter(a => a.enabled && !a.proxySlot);
-  if(!unbound.length){ toast('所有已启用账号都已绑定代理出口', 'ok'); return; }
-  const slots = PROXY_SLOTS.filter(s => s.enabled !== false);
-  if(!slots.length){ toast('没有启用的代理槽，请先在「设置 → 账号代理槽」添加并保存', 'warn'); return; }
-  let i = 0;
-  for(const a of unbound){
-    const slot = slots[i % slots.length];
-    i++;
-    try{ await postJSON('/accounts/set', {uid: a.uid, proxySlot: slot.id}); }catch(e){}
+  const button = btn;
+  const originalText = button ? button.textContent : '';
+  if(button){ button.disabled = true; button.textContent = '正在读取账号...'; }
+  try{
+    const fresh = await getJSON('/accounts?realm=all');
+    window.ACCOUNTS = fresh.accounts || [];
+    const unbound = (window.ACCOUNTS || []).filter(a => a.enabled && !a.proxySlot);
+    if(!unbound.length){ toast('所有已启用账号都已绑定代理出口', 'ok'); return; }
+    const slots = PROXY_SLOTS.filter(s => s.enabled !== false);
+    if(!slots.length){ toast('没有启用的代理槽，请先在「设置 → 账号代理槽」添加并保存', 'warn'); return; }
+    toast('开始为 ' + unbound.length + ' 个未绑定账号分配代理出口', 'ok');
+    let ok = 0, failed = 0;
+    for(let i = 0; i < unbound.length; i++){
+      const a = unbound[i];
+      const slot = slots[i % slots.length];
+      if(button) button.textContent = '分配中 ' + (i + 1) + '/' + unbound.length;
+      try{
+        await postJSON('/accounts/set', {uid: a.uid, proxySlot: slot.id});
+        ok++;
+      }catch(e){
+        failed++;
+        console.warn('auto assign proxy failed', a.uid, e);
+      }
+    }
+    await loadAccounts();
+    await loadProxySlots();
+    if(failed) toast('代理分配完成：成功 ' + ok + ' 个，失败 ' + failed + ' 个', failed === unbound.length ? 'bad' : 'warn');
+    else toast('已为 ' + ok + ' 个未绑定账号分配代理出口', 'ok');
+  }catch(e){
+    toast('一键分配代理失败: ' + e.message, 'bad');
+  }finally{
+    if(button){ button.disabled = false; button.textContent = originalText || '一键分配代理'; }
   }
-  await loadAccounts();
-  await loadProxySlots();
-  toast('已为 ' + unbound.length + ' 个未绑定账号分配代理出口', 'ok');
 }
 
 /* 智能体配置只在「浏览器和网关进程同一台机器」时成立（issue #246）：服务端 /
