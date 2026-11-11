@@ -4180,11 +4180,11 @@ def credits_is_free(value):
 def free_models_by_realm():
     """realm -> set of model ids the catalogue marks free ("x0.00").
 
-    Built from the bundled snapshot and the desktop cache file - both local
-    reads, no network - and cached for a minute so the request path pays
-    nothing. The daily credit guard uses it to tell paid models from free
-    ones, per realm: the same id can be free on one exit and paid on the
-    other.
+    Built from the bundled snapshot, the desktop cache file, and the live
+    ``_models_cache`` entry when it exists - all local reads, no network - and
+    cached for a minute so the request path pays nothing. The daily credit
+    guard uses it to tell paid models from free ones, per realm: the same id
+    can be free on one exit and paid on the other.
     """
     now = time.time()
     data = _free_models_cache.get("data")
@@ -4205,8 +4205,67 @@ def free_models_by_realm():
             for mid, item in (cached[1] or {}).items():
                 if isinstance(item, dict) and credits_is_free(item.get("credits")):
                     free.add(str(mid))
+        # The live /v3/config result can contain a newly free model that neither
+        # the bundled snapshot nor the desktop cache file knows yet (hy4free).
+        live = (_models_cache.get(realm) or {}).get("data") or []
+        for mid, item in live:
+            if isinstance(item, dict) and credits_is_free(item.get("credits")):
+                free.add(str(mid))
         out[realm] = free
     _free_models_cache.update({"at": now, "data": out})
+    return out
+
+
+def free_model_candidates(realm="intl"):
+    """Ordered free chat models for automatic daily-activity fallback.
+
+    The live catalogue is the source of truth; the desktop cache and bundled
+    snapshot only fill gaps. ``deepseek-v4.1-flash`` is deliberately excluded:
+    the intl alias sends it to the paid ``-sg`` build now, so it is the
+    preferred model rather than a free fallback. The same applies to every
+    ``-sg`` variant and to anything whose catalogue price is not x0.00.
+    """
+    r = realm if realm in ("intl", "cn") else "intl"
+    preferred = wb_accounts.DAILY_CHAT_MODEL
+    excluded = {preferred.lower(), (preferred + "-sg").lower()}
+    sources = []
+    live = (_models_cache.get(r) or {}).get("data") or []
+    if live:
+        sources.append(live)
+    cached = read_cached_remote_catalog(r)
+    if cached:
+        sources.append(list((cached[1] or {}).items()))
+    # The gateway's own last successful /v3/config copy. It is not part of the
+    # /v1/models read path, but it is the freshest local evidence on a headless
+    # install where the desktop app is absent and the 300s cache is cold.
+    try:
+        with open(catalog_cache_path(r), encoding="utf-8") as fh:
+            archived = parse_remote_catalog(json.load(fh))
+        if archived:
+            sources.append(list((archived[1] or {}).items()))
+    except Exception:
+        pass
+    sources.append(getattr(
+        wb_catalog, "STATIC_CN_MODELS" if r == "cn" else "STATIC_INTL_MODELS",
+        getattr(wb_catalog, "STATIC_MODELS", [])))
+    out = []
+    seen = set()
+    for source in sources:
+        for entry in source or []:
+            if isinstance(entry, tuple):
+                mid, item = entry
+            else:
+                mid = (entry or {}).get("id") if isinstance(entry, dict) else None
+                item = entry
+            mid = str(mid or "").strip()
+            if not mid or mid in seen or not is_chat_model(mid):
+                continue
+            if mid.lower() in excluded or mid.lower().endswith("-sg"):
+                continue
+            if not isinstance(item, dict) or not credits_is_free(item.get("credits")):
+                continue
+            seen.add(mid)
+            out.append(mid)
     return out
 
 
@@ -11681,6 +11740,8 @@ def runtime_settings_view():
         # （它们的值仍然被读取，用于把老部署的配置换算成预算与候选序列）。
         "daily_chat_models": wb_settings.daily_chat_models(ACCOUNTS_DIR),
         "daily_chat_models_max": wb_settings.DAILY_CHAT_MODELS_MAX,
+        "daily_chat_prefer_flash":
+            wb_settings.daily_chat_prefer_flash(ACCOUNTS_DIR),
         "daily_chat_budget": wb_settings.daily_chat_budget(
             ACCOUNTS_DIR, default=wb_accounts.WEB_BUDGET_DEFAULT),
         "daily_chat_budget_default": wb_accounts.WEB_BUDGET_DEFAULT,
@@ -11755,7 +11816,7 @@ def runtime_settings_view():
         "accounts_dir": ACCOUNTS_DIR,
         "usage_dir": USAGE_DIR,
         "settings_file": wb_settings.settings_path(ACCOUNTS_DIR),
-        "version": "2.0.9",
+        "version": "2.1.1",
     }
 def current_account():
     """Account used for display purposes (health / usage summaries)."""
@@ -12576,6 +12637,7 @@ def fetch_models(realm=None):
                 file_mtime = None
         with _lock:
             _models_cache[r] = {"at": time.time(), "data": entries}
+            _free_models_cache.update({"at": 0.0, "data": None})
             _catalog_meta[r] = {"source": source, "fetched_at": time.time(),
                                 "file_mtime": file_mtime}
         return entries
@@ -13028,6 +13090,7 @@ def refresh_catalog(realm):
         note_bundled_reasoning(realm, live, entries)
         with _lock:
             _models_cache[realm] = {"at": time.time(), "data": entries}
+            _free_models_cache.update({"at": 0.0, "data": None})
             _catalog_meta[realm] = {"source": "remote", "fetched_at": time.time(),
                                     "file_mtime": None}
     log("catalog refresh: %s updated from the product-config endpoint (%d models)"
@@ -15755,7 +15818,7 @@ class PinnedAccountError(Exception):
 
 
 class ContentRejected(Exception):
-    """Upstream content review rejected this request (403 / code 11140).
+    """Upstream content review rejected this request (HTTP 403).
 
     Not an account problem: another credential gets the same 403 for the same
     content, so it is passed straight through instead of cooling the pool.
@@ -15827,8 +15890,8 @@ def gateway_hint(status, message):
     if ("11140" in lower or "账号存在异常行为" in text
             or "account has been restricted" in lower
             or "unusual activity" in lower):
-        return ("上游已对该账号做账号级风控限制（403 / code 11140）；网关已让该账号"
-                "冷却并停止换号重试。请勿换号或高频重试（同设备账号会连坐），"
+        return ("上游已封禁该账号（403 / code 11140）；网关已停止派发和换号重试。"
+                "请勿换号或高频重试（同设备账号会连坐），"
                 "按 WorkBuddy 官方渠道申诉，通常 1-3 个工作日自动解除。")
     if "no usable account" in lower or "no healthy account" in lower:
         return "no healthy account available in pool; check /status or retry later"
@@ -16711,9 +16774,8 @@ def rate_limit_is_account_level(detail, reset_at):
     return credential_scope_phrase(detail) is not None
 
 
-#: 上游风控限制（HTTP 403, code 11140「账号存在异常行为，已被限制使用」）
-#: 的账号冷却时长。定义在 wb_accounts：这是账号级状态且要持久化
-#: （restrictedUntil），时长跟着它走，避免两处各写一份。
+#: 上游账号封禁（HTTP 403, code 11140「账号存在异常行为，已被限制使用」）
+#: 命中即持久禁用，不再有冷却时长或自动恢复。保留常量仅兼容外部导入。
 RESTRICTED_403_COOLDOWN = wb_accounts.RESTRICTED_ACCOUNT_COOLDOWN
 
 # --- 风控连坐保护 ---------------------------------------------------------
@@ -16783,7 +16845,7 @@ def clamp_restriction_holds(max_seconds, now=None):
 
 
 def note_account_restriction(realm, uid="", now=None):
-    """记一次账号级风控限制；若触发连坐暂停则返回暂停到的 epoch（0 = 尚未触发）。
+    """记一次账号级封禁；若触发连坐暂停则返回暂停到的 epoch（0 = 尚未触发）。
 
     同一个区域内达到 RESTRICTION_WAVE_MIN 个**不同**账号被限制，判定为该区域
     遭到了设备 / 出口级别的风控连坐扫荡，全区域紧急暂停配置的 hold_seconds 秒；期间
@@ -16811,16 +16873,16 @@ def note_account_restriction(realm, uid="", now=None):
 
 def restriction_hold_message(realm, remaining):
     """整池暂停期间交给客户端的说明。"""
-    return ("上游风控已限制本区域账号（403 / code 11140，账号存在异常行为）。"
+    return ("上游已封禁本区域账号（403 / code 11140，账号存在异常行为）。"
             "网关已暂停派发 %d 秒，避免继续换号重试导致同设备账号连坐被封。"
             "请勿换号或高频重试；按 WorkBuddy 官方渠道申诉（通常 1-3 个工作日"
-            "自动解除），解封后再恢复。 Upstream restricted the account(s); "
+            "自动解除），解封后再恢复。 Upstream banned the account(s); "
             "dispatch paused %ds to avoid further bans."
             % (int(remaining), int(remaining)))
 
 
 def _persist_restriction(account):
-    """把 restrictedUntil 落盘；失败只记日志，不影响请求路径。"""
+    """把账号封禁状态落盘；失败只记日志，不影响请求路径。"""
     try:
         path = getattr(account, "path", "") or ""
         if path:
@@ -17139,7 +17201,7 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
             raise PinnedAccountError(
                 503, "pinned account '%s' is not usable right now: %s"
                 % (pinned_ref(), pinned.unavailable_reason(model)), pinned.uid)
-    # 连坐保护：同一区域刚有账号被上游风控限制，整池暂停派发。这里直接快速
+    # 连坐保护：同一区域刚有账号被上游封禁，整池暂停派发。这里直接快速
     # 失败、一个上游请求都不发——继续打只会把同一台设备上的其他账号也送走。
     hold = restriction_hold_remaining(realm)
     if hold > 0:
@@ -17544,18 +17606,17 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                     detail = read_http_error(exc, 600).decode("utf-8", "replace")
                 except Exception:
                     detail = ""
-                # 先分流：上游风控限制（code 11140「账号存在异常行为，已被限制
+                # 先分流：上游账号封禁（code 11140「账号存在异常行为，已被限制
                 # 使用」）是账号级的坏，降级提示词救不了。处置按社区复盘的红线
                 # 走：冷却这个账号（持久化）、记一次连坐事件，然后**停手**——
                 # 不再把同一条请求换到下一个号上继续打（默认，见
                 # RESTRICTED_403_ROTATE_MAX）。
                 if restriction_is_account_level(detail):
-                    account.note_restricted(detail=detail,
-                                            cooldown=RESTRICTED_403_COOLDOWN)
+                    account.note_restricted(detail=detail)
                     _persist_restriction(account)
-                    log("account %s restricted by upstream (403 11140), "
-                        "cooling %.0fs (persisted)" % (account.uid[:8],
-                                                       RESTRICTED_403_COOLDOWN))
+                    log("account %s banned by upstream (403 11140), "
+                        "disabled until manually re-enabled (persisted)"
+                        % account.uid[:8])
                     if session_key and POOL:
                         POOL.affinity.demote(session_key, account.uid)
                     last_error = exc
@@ -17903,7 +17964,7 @@ def open_upstream_with_fallback(payload, session_key=None, target_realm=None,
       * `no usable account` 的 RuntimeError —— 该出口的账号全部停用/过期/熔断，
         池子空了。
 
-    别的失败照原样抛出。403 11140（账号被上游风控限制）尤其不能跨出口重打：
+    别的失败照原样抛出。403 11140（账号被上游封禁）尤其不能跨出口重打：
     项目对它有一条红线（见 RESTRICTED_403_ROTATE_MAX 附近），换出口继续打同一台
     设备正是它要防的那件事。pinned / 参数错误更不是换出口能修的。
 
@@ -18183,13 +18244,13 @@ def probe_account(account, model=None, timeout=30):
         # cover a gateway that names the credential as bad).
         row["error"] = wb_accounts.http_error_message(exc, detail, 150)
         if exc.code == 403 and restriction_is_account_level(detail):
-            # 测试也认账号级风控限制：不能用 60 秒的普通冷却把 2 小时覆盖掉，
-            # 更不能用「测试通过」的语义把被限制的账号放回池子（见 #422）。
+            # 测试也认账号级封禁：命中即持久禁用，只有操作者手动启用才解除。
             # 一并记连坐事件：一键测试正好是发现「整池被清扫」的入口。
             account.note_restricted(detail=detail)
             _persist_restriction(account)
             note_account_restriction(account.realm, account.uid)
             row["restricted"] = True
+            row["accountBanned"] = True
             row["fails"] = int(account.fails)
             return row
         account.note_error(wb_accounts.http_error_message(exc, detail, 80),
@@ -21133,7 +21194,7 @@ class Handler(BaseHTTPRequestHandler):
             super().finish()
         except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass
-    server_version = "wb-proxy/2.0.9"
+    server_version = "wb-proxy/2.1.1"
     def log_message(self, fmt, *args):
         # 静默过滤前端看板高频定时心跳的正常 200 GET 请求（/logs、/usage、/accounts 轮询等）
         # 避免自增死循环刷屏与日志污染。遇 4xx/5xx 异常或所有非 GET 业务操作依然如实记录。
@@ -23931,6 +23992,14 @@ class Handler(BaseHTTPRequestHandler):
                     "invalid_request_error")
             reply["daily_chat_models"] = \
                 wb_settings.set_daily_chat_models(ACCOUNTS_DIR, raw)
+        if "daily_chat_prefer_flash" in payload:
+            raw = payload.get("daily_chat_prefer_flash")
+            if not isinstance(raw, bool):
+                return self._error(
+                    400, "daily_chat_prefer_flash must be true or false",
+                    "invalid_request_error")
+            wb_settings.set_daily_chat_prefer_flash(ACCOUNTS_DIR, raw)
+            reply["daily_chat_prefer_flash"] = raw
         if "daily_chat_budget" in payload:
             # Whole seconds, 0 = no budget. This is the only time bound of the
             # whole web activity, so wb_settings owns the range check and the
@@ -24999,6 +25068,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_account_credits_detail(payload)
         if path == "/tasks/run":
             return self._route_tasks_run(payload)
+        if path == "/tasks/night":
+            return self._route_tasks_night(payload)
         if path == "/tasks/claim":
             return self._route_tasks_claim(payload)
         if path == "/tasks/travel":
@@ -25196,6 +25267,64 @@ class Handler(BaseHTTPRequestHandler):
             "credit_added": total_credit,
             "logs": combined_logs,
             "accounts_count": len(targets)
+        })
+
+    def _route_tasks_night(self, payload):
+        """Run the daily night-owl task only.
+
+        Kept separate from /tasks/run: that endpoint is the one-time / event
+        task pipeline, while black_cat is a daily task with its own 23:00-08:00
+        window. Mixing them made a one-time run consume a daily quota silently.
+        """
+        if not POOL:
+            return self._json_panel(200, {"ok": False, "msg": "账号池不可用"})
+        invalidate_tasks_cache()
+        uid = payload.get("uid")
+        if uid and uid != "all":
+            target = POOL.get(uid)
+            if not target or target.realm != "cn":
+                return self._json_panel(200, {"ok": False,
+                                              "msg": "未找到指定的国内版账号"})
+            targets = [target]
+        else:
+            targets = POOL.task_accounts("cn")
+        targets = [a for a in targets if a is not None]
+        if not targets:
+            return self._json_panel(200, {"ok": False,
+                                          "msg": "未找到参与任务的国内版账号"})
+
+        from wb_tasks import run_night_growth
+        results = []
+        all_ok = True
+        for i, acc in enumerate(targets):
+            uid_str = acc.uid[:8] if acc.uid else "?"
+            nick = acc.nickname or uid_str
+            res = run_night_growth(acc)
+            ok = res.get("ok") is not False
+            all_ok = all_ok and ok
+            results.append({
+                "uid": acc.uid,
+                "nickname": nick,
+                "ok": ok,
+                "logs": res.get("logs") or [],
+                "earned_credit": res.get("earned_credit") or 0,
+            })
+            for line in res.get("logs") or []:
+                add_log_entry(f"[任务福利] 账号 [{nick}] 夜猫子任务: {line}",
+                              tag="tasks")
+            if i < len(targets) - 1:
+                time.sleep(1.0)
+
+        summary = chr(10).join(
+            "%s: %s" % (r["nickname"],
+                        (r["logs"][-1] if r["logs"] else
+                         ("完成" if r["ok"] else "未完成")))
+            for r in results)
+        return self._json_panel(200, {
+            "ok": all_ok,
+            "results": results,
+            "msg": summary,
+            "accounts_count": len(targets),
         })
 
     def _route_tasks_claim(self, payload):
@@ -25877,6 +26006,39 @@ class Handler(BaseHTTPRequestHandler):
             return self._json_panel(200, {
                 "moved": len(moved),
                 "uids": moved,
+                "accounts": account_views(),
+            })
+        uids = payload.get("uids")
+        if uids is not None:
+            # Checkbox batch actions are an explicit set, not a group or the
+            # whole pool. Reject malformed or unknown UIDs instead of silently
+            # applying the operation to something broader.
+            if not isinstance(uids, list) or not uids:
+                return self._error(
+                    400, "uids must be a non-empty list",
+                    "invalid_request_error")
+            wanted = list(dict.fromkeys(
+                str(uid).strip() for uid in uids if str(uid).strip()))
+            if not wanted:
+                return self._error(
+                    400, "uids must contain at least one non-empty uid",
+                    "invalid_request_error")
+            missing = [uid for uid in wanted if POOL.get(uid) is None]
+            if missing:
+                return self._error(
+                    404, "no such account: %s" % ", ".join(missing[:5]),
+                    "invalid_request_error")
+            raw_enabled = payload.get("enabled")
+            if not isinstance(raw_enabled, bool):
+                return self._error(400, "enabled must be true or false",
+                                   "invalid_request_error")
+            changed = POOL.set_enabled_many(wanted, raw_enabled)
+            log("selected accounts: %d %s"
+                % (len(changed),
+                   "enabled" if raw_enabled else "disabled"))
+            return self._json_panel(200, {
+                "changed": len(changed),
+                "uids": changed,
                 "accounts": account_views(),
             })
         group = str(payload.get("group") or "").strip()
